@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alt Text Checker</title>
+<style>
+  :root { --bg:#fff; --fg:#111; --muted:#666; --border:#ddd; --panel:#f6f6f7; --red:#c62828; --amber:#b26a00; --green:#2e7d32; --blue:#1d6fe0; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111; --fg:#eee; --muted:#999; --border:#333; --panel:#1b1b1d; --red:#ef5350; --amber:#ffb74d; --green:#66bb6a; --blue:#5b9bff; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:900px; margin:0 auto; padding:32px 20px 60px; }
+  h1 { margin:0 0 6px; font-size:28px; }
+  p.sub { margin:0 0 24px; color:var(--muted); }
+  textarea { width:100%; min-height:240px; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--fg); font:13px/1.5 ui-monospace,Menlo,Consolas,monospace; resize:vertical; }
+  .btns { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0 24px; }
+  button { padding:9px 16px; border-radius:8px; border:1px solid var(--border); background:var(--panel); color:var(--fg); font-size:14px; cursor:pointer; }
+  button.primary { background:var(--blue); border-color:var(--blue); color:#fff; }
+  .stats { display:flex; flex-wrap:wrap; gap:12px; margin:12px 0 16px; }
+  .stat { flex:1 1 150px; border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+  .stat b { display:block; font-size:26px; }
+  .stat.red b { color:var(--red); } .stat.amber b { color:var(--amber); }
+  .msg { padding:12px 14px; border-radius:8px; border:1px solid var(--border); background:var(--panel); }
+  .msg.ok { color:var(--green); }
+  .tablewrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  td code { font:12px ui-monospace,Menlo,Consolas,monospace; word-break:break-all; }
+  .missing { color:var(--red); font-weight:600; } .unused { color:var(--muted); } .empty, .weak { color:var(--amber); font-weight:600; }
+  .help { margin-top:32px; color:var(--muted); font-size:14px; }
+  .help p { margin:6px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Alt Text Checker</h1>
+  <p class="sub">Paste HTML, JSX or JSON (page builder data) code, hit Check, and see images with no alt, an empty alt, or a useless alt like “photo”. Everything runs in your browser; nothing is uploaded.</p>
+  <textarea id="code" spellcheck="false" placeholder="Paste your page or component code here"></textarea>
+  <div class="btns">
+    <button class="primary" id="check">Check</button>
+    <button id="example">Load example</button>
+    <button id="csv" style="display:none">Download CSV</button>
+    <button id="clear">Clear</button>
+  </div>
+  <div id="out"></div>
+  <div class="help">
+    <p><b>Missing alt</b> means the image has no alt attribute at all. That is an error and should be fixed.</p>
+    <p><b>Empty alt</b> means alt="". That is correct for a purely decorative image, but an image that carries meaning needs a description.</p>
+    <p><b>JSON fields</b> like "alt_text", "image_alt_text" or "background_image_alt" are checked too. If the alt is empty but the image fields next to it (mobile, desktop, src, url) have a picture, it counts as a problem. If those are empty too, it is listed as an empty slot.</p>
+    <p><b>Useless alt</b> means it holds a word like photo or image, or a file name. Describe what is in the picture instead.</p>
+  </div>
+</main>
+<script>
+const WEAK = ["image","img","photo","picture","pic","alt","banner","icon","logo","untitled","null","undefined","картинка","фото","изображение","зображення"];
+function lineOf(src, idx){ let n=1; for(let i=0;i<idx;i++) if(src.charCodeAt(i)===10) n++; return n; }
+function isWeak(a){ return WEAK.includes(a.toLowerCase()) || /\.(jpe?g|png|gif|webp|svg|avif)$/i.test(a) || /^(img|image|dsc|photo)[-_ ]?\d+/i.test(a); }
+function getAlt(tag){
+  const m = tag.match(/\salt\s*=\s*(\{\s*["'`]([^"'`]*)["'`]\s*\}|\{([^}]*)\}|"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+  if(!m) return /\salt(\s|\/?>|$)/i.test(tag) ? "" : null;
+  if(m[2]!==undefined) return m[2];
+  if(m[3]!==undefined) return "{"+m[3]+"}";
+  if(m[4]!==undefined) return m[4];
+  if(m[5]!==undefined) return m[5];
+  return m[6] || "";
+}
+function isAltKey(k){ return k.toLowerCase()==="alt" || /(^|[_-])alt([_-]|$)/i.test(k) || /^alt[A-Z]/.test(k) || /[a-z]Alt([A-Z]|$)/.test(k); }
+function enclosing(src, idx){
+  let d=0, s=-1, e=-1;
+  for(let i=idx;i>=0;i--){ const c=src[i]; if(c==="}") d++; else if(c==="{"){ if(d===0){ s=i; break; } d--; } }
+  if(s<0) return "";
+  d=0;
+  for(let i=s+1;i<src.length;i++){ const c=src[i]; if(c==="{") d++; else if(c==="}"){ if(d===0){ e=i; break; } d--; } }
+  return e<0 ? "" : src.slice(s, e+1);
+}
+const IMGKEY = /"(mobile|desktop|retina|tablet|src|url|image|image_url|imageUrl|imageSrc|img|href)"\s*:\s*"((?:[^"\\]|\\.)*)"/gi;
+function imageState(obj){
+  let found=false, filled=false, m; IMGKEY.lastIndex=0;
+  while((m=IMGKEY.exec(obj))!==null){ found=true; if(m[2].trim()!=="") filled=true; }
+  return !found ? "unknown" : (filled ? "has" : "none");
+}
+function check(src){
+  const issues=[], unused=[]; let total=0, m;
+  const re=/<(img|Image|area)\b[^>]*>|<input\b[^>]*type\s*=\s*["']?image["']?[^>]*>/gi;
+  while((m=re.exec(src))!==null){
+    total++;
+    const tag=m[0], line=lineOf(src,m.index), alt=getAlt(tag);
+    if(alt===null){ issues.push({line,kind:"missing",tag,alt:""}); continue; }
+    const a=alt.trim();
+    if(a===""){ issues.push({line,kind:"empty",tag,alt:""}); continue; }
+    if(isWeak(a)) issues.push({line,kind:"weak",tag,alt:a});
+  }
+  const re2=/"([A-Za-z0-9_\-]+)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+  while((m=re2.exec(src))!==null){
+    if(!isAltKey(m[1])) continue;
+    total++;
+    const line=lineOf(src,m.index), tag=m[0], a=m[2].trim();
+    if(a!=="" && !isWeak(a)) continue;
+    const st=imageState(enclosing(src,m.index));
+    if(a===""){
+      if(st==="none") unused.push({line,kind:"unused",tag,alt:""});
+      else issues.push({line,kind:"empty",tag,alt:""});
+    } else issues.push({line,kind:"weak",tag,alt:a});
+  }
+  issues.sort((x,y)=>x.line-y.line); unused.sort((x,y)=>x.line-y.line);
+  return {issues,unused,total};
+}
+
+
+const LABEL = { missing:"Missing alt", empty:"Empty alt", weak:"Useless alt", unused:"Empty slot" };
+const SAMPLE = `<img src="hero.jpg">
+<img src="logo.png" alt="">
+<img src="team.jpg" alt="photo">
+<img src="cat.jpg" alt="Ginger cat sleeping on a windowsill">
+{"background": {"background_image_alt": "", "desktop": "/img/bg.jpg"}}`;
+let lastIssues = [];
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const short = t => t.length>140 ? t.slice(0,140)+"…" : t;
+const rowsHtml = list => list.map(i=>`<tr><td>${i.line}</td><td class="${i.kind}">${LABEL[i.kind]}${i.kind==="weak"?`: “${esc(i.alt)}”`:""}</td><td><code>${esc(short(i.tag))}</code></td></tr>`).join("");
+const table = list => `<div class="tablewrap"><table><thead><tr><th>Line</th><th>Issue</th><th>Code</th></tr></thead><tbody>${rowsHtml(list)}</tbody></table></div>`;
+function render(src){
+  const out=document.getElementById("out"), csvBtn=document.getElementById("csv");
+  if(!src.trim()){ out.innerHTML=""; csvBtn.style.display="none"; lastIssues=[]; return; }
+  const {issues,unused,total}=check(src); lastIssues=issues.concat(unused);
+  csvBtn.style.display = lastIssues.length ? "" : "none";
+  if(total===0){ out.innerHTML='<div class="msg">No images or alt fields found: no img tags and no JSON keys like "alt", "alt_text" or "image_alt".</div>'; return; }
+  const c=k=>issues.filter(i=>i.kind===k).length;
+  let html = `<p>Alt spots found: ${total}. Problems: ${issues.length}.${unused.length?` Empty slots with no image: ${unused.length}.`:""}</p>`;
+  if(!issues.length) html += `<div class="msg ok">No real problems: every image has a proper alt.</div>`;
+  else html += `<div class="stats">
+    <div class="stat red"><b>${c("missing")}</b>Missing alt</div>
+    <div class="stat amber"><b>${c("empty")}</b>Empty alt</div>
+    <div class="stat amber"><b>${c("weak")}</b>Useless alt</div>
+  </div>` + table(issues);
+  if(unused.length) html += `<h3 style="margin:28px 0 4px;font-size:17px">Empty slots (probably fine)</h3><p style="margin:0 0 8px;color:var(--muted);font-size:14px">The alt is empty, but the image fields next to it are empty too, so no picture is shown there.</p>` + table(unused);
+  out.innerHTML = html;
+}
+function downloadCSV(){
+  const q=s=>'"'+String(s).replace(/"/g,'""')+'"';
+  const rows=[["Line","Issue","Alt","Code"]].concat(lastIssues.map(i=>[i.line,LABEL[i.kind],i.alt,i.tag]));
+  const blob=new Blob(["\ufeff"+rows.map(r=>r.map(q).join(",")).join("\n")],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="alt-text-report.csv"; a.click();
+}
+const ta=document.getElementById("code");
+document.getElementById("check").onclick=()=>render(ta.value);
+document.getElementById("example").onclick=()=>{ ta.value=SAMPLE; render(SAMPLE); };
+document.getElementById("clear").onclick=()=>{ ta.value=""; render(""); };
+document.getElementById("csv").onclick=downloadCSV;
+</script>
+</body>
+</html>
